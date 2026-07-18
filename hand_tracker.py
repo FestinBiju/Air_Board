@@ -14,6 +14,7 @@ class HandResult:
     point: tuple[int, int] | None
     drawing: bool
     landmarks: object | None
+    clear_gesture: bool = False
 
 
 class HandTracker:
@@ -33,7 +34,7 @@ class HandTracker:
         self.smoothed: tuple[float, float] | None = None
         self.missing_frames = 0
 
-    def process(self, frame: np.ndarray) -> HandResult:
+    def process(self, frame: np.ndarray, detect_fist: bool = False) -> HandResult:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self.hands.process(rgb)
         if not result.multi_hand_landmarks:
@@ -56,12 +57,33 @@ class HandTracker:
             self.smoothed = (self.smoothing * raw_x + (1 - self.smoothing) * old_x,
                              self.smoothing * raw_y + (1 - self.smoothing) * old_y)
         point = (int(self.smoothed[0]), int(self.smoothed[1]))
+        # A fist has at least three fingertips folded back toward the wrist.
+        # Normalizing against each finger's PIP distance makes this independent
+        # of how close the hand is to the camera.
+        clear_gesture = detect_fist and self._is_closed_fist(landmarks)
+        if clear_gesture:
+            self.drawing = False
+            return HandResult(point, False, landmarks, clear_gesture=True)
         distance = math.hypot((index.x - thumb.x) * width, (index.y - thumb.y) * height)
         if not self.drawing and distance < self.PINCH_START_THRESHOLD:
             self.drawing = True
         elif self.drawing and distance > self.PINCH_RELEASE_THRESHOLD:
             self.drawing = False
         return HandResult(point, self.drawing, landmarks)
+
+    @staticmethod
+    def _is_closed_fist(landmarks: object) -> bool:
+        """Return true when at least three fingers are curled toward the wrist."""
+        wrist = landmarks.landmark[0]
+        curled_fingers = 0
+        for tip_id, pip_id in ((8, 6), (12, 10), (16, 14), (20, 18)):
+            tip = landmarks.landmark[tip_id]
+            pip = landmarks.landmark[pip_id]
+            tip_distance = math.hypot(tip.x - wrist.x, tip.y - wrist.y)
+            pip_distance = math.hypot(pip.x - wrist.x, pip.y - wrist.y)
+            if tip_distance < pip_distance * 1.15:
+                curled_fingers += 1
+        return curled_fingers >= 3
 
     def draw_landmarks(self, frame: np.ndarray, landmarks: object) -> None:
         self.drawer.draw_landmarks(frame, landmarks, self.connections)

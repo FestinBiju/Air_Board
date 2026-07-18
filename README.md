@@ -27,6 +27,8 @@ python main.py
 
 Click **Start Camera**, raise one hand, and use the index fingertip as the cursor. Pinch the thumb and index fingertip together to begin a stroke; separate them to finish it.
 
+Fist clearing is disabled by default because hand poses can vary. Enable **Enable fist clear (experimental)** to clear with a closed fist; each fist gesture clears only once until you open your hand again.
+
 ## Controls
 
 - `C`: clear drawings

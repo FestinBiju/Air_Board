@@ -18,6 +18,28 @@ from image_manager import ImageManager
 from media_manager import MediaManager
 
 
+class RoundedCard(tk.Canvas):
+    """Rounded visual surface which still hosts ordinary Tkinter widgets."""
+
+    def __init__(self, parent: tk.Misc, surface: str, radius: int = 18, **kwargs) -> None:
+        super().__init__(parent, bg="#0f172a", highlightthickness=0, bd=0, **kwargs)
+        self.surface = surface
+        self.radius = radius
+        self.content = tk.Frame(self, bg=surface)
+        self._shape = self.create_polygon(0, 0, 0, 0, fill=surface, outline="", smooth=True, splinesteps=24)
+        self._content_window = self.create_window(6, 6, anchor=tk.NW, window=self.content)
+        self.bind("<Configure>", self._redraw)
+
+    def _redraw(self, _event: tk.Event | None = None) -> None:
+        width, height = self.winfo_width(), self.winfo_height()
+        radius = min(self.radius, width // 2, height // 2)
+        points = (radius, 0, width - radius, 0, width, 0, width, radius, width, height - radius,
+                  width, height, width - radius, height, radius, height, 0, height, 0, height - radius,
+                  0, radius, 0, 0)
+        self.coords(self._shape, *points)
+        self.itemconfigure(self._content_window, width=max(1, width - 12), height=max(1, height - 12))
+
+
 class AirBoardApp:
     FRAME_DELAY_MS = 33
 
@@ -25,7 +47,8 @@ class AirBoardApp:
         self.root = root
         root.title("Air_Board – Gesture Drawing Camera")
         root.minsize(1050, 650)
-        root.configure(bg="#20242b")
+        root.configure(bg="#0f172a")
+        self._configure_styles()
         self.capture: cv2.VideoCapture | None = None
         self.after_id: str | None = None
         self.preview_photo: ImageTk.PhotoImage | None = None
@@ -35,6 +58,7 @@ class AirBoardApp:
         self.live_controls: tk.Toplevel | None = None
         self.media_controls: tk.Toplevel | None = None
         self.presentation = False
+        self.fist_was_active = False
         self.pen_bgr = (30, 30, 255)
         self.canvas = CanvasManager()
         self.images = ImageManager()
@@ -55,36 +79,39 @@ class AirBoardApp:
         self.loop_var = tk.BooleanVar(value=True)
         self.mute_var = tk.BooleanVar(value=True)
         self.landmarks_var = tk.BooleanVar(value=False)
+        self.fist_clear_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Camera stopped")
         self._build_ui()
         self._bind_shortcuts()
         root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build_ui(self) -> None:
-        self.main_frame = tk.Frame(self.root, bg="#20242b")
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        self.main_frame = tk.Frame(self.root, bg="#0f172a")
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
         self.main_frame.grid_rowconfigure(0, weight=1)
         # The preview may grow, but it can never consume the fixed-width controls.
         self.main_frame.grid_columnconfigure(0, weight=1, minsize=640)
         self.main_frame.grid_columnconfigure(1, weight=0, minsize=300)
-        self.preview_frame = tk.Frame(self.main_frame, bg="#111318", highlightthickness=1, highlightbackground="#4a5568")
-        self.preview_frame.grid(row=0, column=0, sticky="nsew")
+        self.preview_card = RoundedCard(self.main_frame, "#111827")
+        self.preview_card.grid(row=0, column=0, sticky="nsew")
+        self.preview_frame = self.preview_card.content
         # Ignore the incoming image's requested dimensions; the grid owns layout.
         self.preview_frame.grid_propagate(False)
-        self.preview_label = tk.Label(self.preview_frame, bg="#111318", fg="#aeb8c5", text="Click Start Camera to begin", font=("Segoe UI", 15))
+        self.preview_label = tk.Label(self.preview_frame, bg="#111827", fg="#cbd5e1", text="Click Start Camera to begin", font=("Segoe UI", 15))
         self.preview_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        self.controls = tk.Frame(self.main_frame, bg="#2b3039", width=280)
-        self.controls.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        self.controls_card = RoundedCard(self.main_frame, "#2b3039", width=300)
+        self.controls_card.grid(row=0, column=1, sticky="ns", padx=(14, 0))
+        self.controls = self.controls_card.content
         self.controls.pack_propagate(False)
-        self._label("Air_Board", 18).pack(pady=(14, 2))
-        self._label("Gesture Drawing Camera", 10, "#b8c2d0").pack(pady=(0, 12))
+        self._label("Air_Board", 20).pack(pady=(16, 1))
+        self._label("GESTURE DRAWING STUDIO", 8, "#94a3b8").pack(pady=(0, 14))
         camera_row = tk.Frame(self.controls, bg="#2b3039")
         camera_row.pack(fill=tk.X, padx=14, pady=3)
         self._label("Camera", 10).pack(in_=camera_row, side=tk.LEFT)
         ttk.Combobox(camera_row, textvariable=self.camera_var, values=("0", "1", "2", "3"), width=4, state="readonly").pack(side=tk.RIGHT)
         buttons = tk.Frame(self.controls, bg="#2b3039")
         buttons.pack(fill=tk.X, padx=14, pady=6)
-        self.start_button = ttk.Button(buttons, text="Start Camera", command=self.start_camera)
+        self.start_button = ttk.Button(buttons, text="Start Camera", command=self.start_camera, style="Accent.TButton")
         self.start_button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
         ttk.Button(buttons, text="Stop", command=self.stop_camera).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
         ttk.Separator(self.controls).pack(fill=tk.X, padx=14, pady=5)
@@ -107,12 +134,27 @@ class AirBoardApp:
         ttk.Button(actions, text="Undo", command=self.undo).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
         ttk.Button(actions, text="Clear Canvas", command=self.clear).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
         tk.Checkbutton(self.controls, text="Show hand landmarks", variable=self.landmarks_var, bg="#2b3039", fg="#e8edf4", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="#fff").pack(anchor=tk.W, padx=14, pady=4)
-        ttk.Button(self.controls, text="Open OBS Output (F11)", command=self.toggle_presentation).pack(fill=tk.X, padx=14, pady=4)
-        tk.Label(self.controls, textvariable=self.status_var, bg="#1d8254", fg="white", font=("Segoe UI", 10, "bold"), padx=8, pady=7).pack(fill=tk.X, padx=14, pady=(8, 8))
+        tk.Checkbutton(self.controls, text="Enable fist clear (experimental)", variable=self.fist_clear_var, command=self._on_fist_clear_toggle, bg="#2b3039", fg="#fbbf24", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="#fbbf24").pack(anchor=tk.W, padx=14, pady=(0, 4))
+        ttk.Button(self.controls, text="Open OBS Output (F11)", command=self.toggle_presentation, style="Accent.TButton").pack(fill=tk.X, padx=14, pady=4)
+        tk.Label(self.controls, textvariable=self.status_var, bg="#14532d", fg="#dcfce7", font=("Segoe UI", 9, "bold"), padx=10, pady=8).pack(fill=tk.X, padx=14, pady=(10, 8))
         self._label("C clear   Ctrl+Z undo   I image\nV local video   R remove image   Esc close", 8, "#b8c2d0").pack(pady=2)
 
     def _label(self, text: str, size: int, color: str = "#f3f6fb") -> tk.Label:
         return tk.Label(self.controls, text=text, bg="#2b3039", fg=color, font=("Segoe UI", size))
+
+    @staticmethod
+    def _configure_styles() -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("TButton", font=("Segoe UI", 9, "bold"), foreground="#e2e8f0", background="#3b475a", borderwidth=0, focusthickness=0, padding=(10, 8))
+        style.map("TButton", background=[("active", "#475569"), ("pressed", "#334155")])
+        style.configure("Accent.TButton", foreground="#ffffff", background="#4f46e5", borderwidth=0, padding=(10, 9))
+        style.map("Accent.TButton", background=[("active", "#6366f1"), ("pressed", "#4338ca")])
+        style.configure("TCombobox", fieldbackground="#1e293b", background="#334155", foreground="#e2e8f0", arrowcolor="#cbd5e1", padding=5)
+        style.configure("TSeparator", background="#475569")
 
     def _slider(self, label: str, variable: tk.IntVar, minimum: int, maximum: int) -> None:
         self._label(label, 9, "#d6dce5").pack(anchor=tk.W, padx=14, pady=(5, 0))
@@ -189,17 +231,26 @@ class AirBoardApp:
             return
         # Keep this composed frame natural for the clean OBS output window.
         clean_frame = frame.copy()
-        result = self.tracker.process(clean_frame)
+        result = self.tracker.process(clean_frame, detect_fist=self.fist_clear_var.get())
         if result.point is None:
             self.canvas.finish_stroke()
+            self.fist_was_active = False
             self.status_var.set("No hand detected")
+        elif result.clear_gesture:
+            self.canvas.finish_stroke()
+            if not self.fist_was_active:
+                self.canvas.clear()
+            self.fist_was_active = True
+            self.status_var.set("Canvas cleared (fist)")
         elif result.drawing:
+            self.fist_was_active = False
             if self.canvas.active_stroke is None:
                 self.canvas.start_stroke(result.point, self.pen_bgr, self.width_var.get())
             else:
                 self.canvas.add_point(result.point)
             self.status_var.set("Drawing")
         else:
+            self.fist_was_active = False
             self.canvas.finish_stroke()
             self.status_var.set("Tracking")
         frame = self.images.overlay(frame, self.x_var.get(), self.y_var.get(), self.scale_var.get())
@@ -224,7 +275,7 @@ class AirBoardApp:
         target_width = min(max_width, int(max_height * 16 / 9))
         target_height = int(target_width * 9 / 16)
         image.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
-        viewport = Image.new("RGB", (target_width, target_height), "#111318")
+        viewport = Image.new("RGB", (target_width, target_height), "#111827")
         viewport.paste(image, ((target_width - image.width) // 2, (target_height - image.height) // 2))
         return ImageTk.PhotoImage(image=viewport)
 
@@ -378,6 +429,10 @@ class AirBoardApp:
     def toggle_landmarks(self) -> None:
         self.landmarks_var.set(not self.landmarks_var.get())
 
+    def _on_fist_clear_toggle(self) -> None:
+        # Requiring a new fist after enabling prevents an immediate clear.
+        self.fist_was_active = False
+
     def toggle_presentation(self) -> None:
         self.presentation = not self.presentation
         if self.presentation:
@@ -404,7 +459,7 @@ class AirBoardApp:
         self.live_controls.configure(bg="#2b3039")
         self.live_controls.attributes("-topmost", True)
         self.live_controls.resizable(False, False)
-        self.live_controls.geometry("270x340+24+80")
+        self.live_controls.geometry("270x380+24+80")
         tk.Label(self.live_controls, text="Live Controls", bg="#2b3039", fg="white", font=("Segoe UI", 13, "bold")).pack(pady=(12, 3))
         tk.Label(self.live_controls, text="Not included in OBS Output", bg="#2b3039", fg="#b8c2d0", font=("Segoe UI", 8)).pack(pady=(0, 8))
         ttk.Button(self.live_controls, text="Choose Pen Colour", command=self.choose_color).pack(fill=tk.X, padx=14, pady=3)
@@ -420,6 +475,7 @@ class AirBoardApp:
         ttk.Button(actions, text="Clear", command=self.clear).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
         ttk.Button(self.live_controls, text="Close OBS Output", command=self.toggle_presentation).pack(fill=tk.X, padx=14, pady=(1, 10))
         ttk.Button(self.live_controls, text="Video Controls", command=self.show_media_controls).pack(fill=tk.X, padx=14, pady=(0, 10))
+        tk.Checkbutton(self.live_controls, text="Enable fist clear (experimental)", variable=self.fist_clear_var, command=self._on_fist_clear_toggle, bg="#2b3039", fg="#fbbf24", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="#fbbf24").pack(anchor=tk.W, padx=14, pady=(0, 10))
         self.live_controls.protocol("WM_DELETE_WINDOW", self._hide_live_controls)
 
     def _hide_live_controls(self) -> None:
