@@ -4,12 +4,14 @@ Air_Board is a lightweight Windows desktop prototype for drawing in the air over
 
 ## Features
 
-- Mirrored in-app webcam preview with one-hand MediaPipe tracking
+- Aspect-ratio-locked 16:9 presenter preview with one-hand MediaPipe tracking
+- Mirrored local presenter preview plus a natural-orientation OBS Output window
 - Green index-finger cursor; red cursor while pinching to draw
 - Persistent, anti-aliased strokes with clear and undo
 - Live pen-colour and 1–25 px stroke-width controls
 - One PNG/JPG/JPEG overlay with live X/Y position and scale controls
 - PNG alpha support; annotations render above the overlay
+- One local or direct-URL MP4 video overlay with playback and transform controls
 - Optional landmarks and full-screen presentation mode for OBS
 
 ## Requirements and installation
@@ -37,11 +39,17 @@ Click **Start Camera**, raise one hand, and use the index fingertip as the curso
 
 Use **Choose Pen Colour** and **Stroke width** before beginning a new stroke. Existing strokes retain their own settings. Add an image and adjust its X, Y, and scale sliders; drawing is always composited over it.
 
+## Video overlay
+
+Click **Add Local Video** (or press `V`) to choose an MP4, AVI, MOV, MKV, or WebM file. Use **Add MP4 URL** for a direct `https://.../file.mp4` link; Air_Board downloads it without blocking the webcam UI. **Video Controls** provides play, pause, restart, loop, mute, freeze frame, X/Y position, scale, and removal. Only one video overlay is active, and it is composed before the drawing canvas so annotations always appear over it.
+
+The overlay never includes audio in the OBS Window Capture video feed; the mute control records the desired state while keeping that behavior explicit. Video decoding depends on the codecs installed with OpenCV; MP4 with H.264 is the most reliable option.
+
 ## OBS setup
 
 Open OBS Studio, add a Window Capture source, select the Air_Board window, click Start Virtual Camera, and choose OBS Virtual Camera in your meeting app.
 
-For a clean capture, press `F11` after setting up the feed. OBS configuration remains manual.
+For a clean capture, press `F11` to open **Air_Board – OBS Output**. Capture that window in OBS; it is unmirrored for your audience while the main Air_Board window remains mirrored for comfortable air drawing. A separate always-on-top **Live Controls** window lets you change pen colour and width, undo, or clear while presenting; it is not captured by OBS. Press `F11` or `Escape` in the output window to close it. OBS configuration remains manual.
 
 ## Troubleshooting and limitations
 
