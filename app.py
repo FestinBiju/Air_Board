@@ -8,6 +8,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+import time
 
 import cv2
 from PIL import Image, ImageTk
@@ -46,7 +47,7 @@ class AirBoardApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title("Air_Board – Gesture Drawing Camera")
-        root.minsize(1050, 650)
+        root.minsize(1100, 780)
         root.configure(bg="#0f172a")
         self._configure_styles()
         self.capture: cv2.VideoCapture | None = None
@@ -59,6 +60,9 @@ class AirBoardApp:
         self.media_controls: tk.Toplevel | None = None
         self.presentation = False
         self.fist_was_active = False
+        self.mode_zone_pinch_active = False
+        self.pointer_trail: list[tuple[float, tuple[int, int]]] = []
+        self.last_output_frame = None
         self.pen_bgr = (30, 30, 255)
         self.canvas = CanvasManager()
         self.images = ImageManager()
@@ -80,6 +84,9 @@ class AirBoardApp:
         self.mute_var = tk.BooleanVar(value=True)
         self.landmarks_var = tk.BooleanVar(value=False)
         self.fist_clear_var = tk.BooleanVar(value=False)
+        self.smart_shapes_var = tk.BooleanVar(value=True)
+        self.mode_var = tk.StringVar(value="DRAW")
+        self.resume_annotation_var = tk.StringVar(value="keep")
         self.status_var = tk.StringVar(value="Camera stopped")
         self._build_ui()
         self._bind_shortcuts()
@@ -105,6 +112,14 @@ class AirBoardApp:
         self.controls.pack_propagate(False)
         self._label("Air_Board", 20).pack(pady=(16, 1))
         self._label("GESTURE DRAWING STUDIO", 8, "#94a3b8").pack(pady=(0, 14))
+        modes = tk.Frame(self.controls, bg="#2b3039")
+        modes.pack(fill=tk.X, padx=14, pady=(0, 8))
+        self.mode_buttons: dict[str, ttk.Button] = {}
+        for mode in ("DRAW", "POINTER", "MEDIA"):
+            button = ttk.Button(modes, text=mode, command=lambda value=mode: self.set_mode(value))
+            button.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+            self.mode_buttons[mode] = button
+        self._refresh_mode_buttons()
         camera_row = tk.Frame(self.controls, bg="#2b3039")
         camera_row.pack(fill=tk.X, padx=14, pady=3)
         self._label("Camera", 10).pack(in_=camera_row, side=tk.LEFT)
@@ -135,6 +150,7 @@ class AirBoardApp:
         ttk.Button(actions, text="Clear Canvas", command=self.clear).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
         tk.Checkbutton(self.controls, text="Show hand landmarks", variable=self.landmarks_var, bg="#2b3039", fg="#e8edf4", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="#fff").pack(anchor=tk.W, padx=14, pady=4)
         tk.Checkbutton(self.controls, text="Enable fist clear (experimental)", variable=self.fist_clear_var, command=self._on_fist_clear_toggle, bg="#2b3039", fg="#fbbf24", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="#fbbf24").pack(anchor=tk.W, padx=14, pady=(0, 4))
+        tk.Checkbutton(self.controls, text="Smart shapes", variable=self.smart_shapes_var, bg="#2b3039", fg="#c4b5fd", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="#c4b5fd").pack(anchor=tk.W, padx=14, pady=(0, 4))
         ttk.Button(self.controls, text="Open OBS Output (F11)", command=self.toggle_presentation, style="Accent.TButton").pack(fill=tk.X, padx=14, pady=4)
         tk.Label(self.controls, textvariable=self.status_var, bg="#14532d", fg="#dcfce7", font=("Segoe UI", 9, "bold"), padx=10, pady=8).pack(fill=tk.X, padx=14, pady=(10, 8))
         self._label("C clear   Ctrl+Z undo   I image\nV local video   R remove image   Esc close", 8, "#b8c2d0").pack(pady=2)
@@ -167,6 +183,9 @@ class AirBoardApp:
         self.root.bind_all("<Key-v>", lambda e: self._shortcut(e, self.add_local_video))
         self.root.bind_all("<Key-r>", lambda e: self._shortcut(e, self.remove_image))
         self.root.bind_all("<Key-l>", lambda e: self._shortcut(e, self.toggle_landmarks))
+        self.root.bind_all("<Key-1>", lambda e: self._shortcut(e, lambda: self.set_mode("DRAW")))
+        self.root.bind_all("<Key-2>", lambda e: self._shortcut(e, lambda: self.set_mode("POINTER")))
+        self.root.bind_all("<Key-3>", lambda e: self._shortcut(e, lambda: self.set_mode("MEDIA")))
         self.root.bind_all("<F11>", lambda e: self.toggle_presentation())
         self.root.bind_all("<Escape>", self.on_escape)
 
@@ -216,7 +235,7 @@ class AirBoardApp:
         if self.capture:
             self.capture.release()
             self.capture = None
-        self.canvas.finish_stroke()
+        self._finish_active_stroke()
         self.tracker.drawing = False
         self.status_var.set("Camera stopped")
         self.start_button.configure(state=tk.NORMAL)
@@ -232,38 +251,60 @@ class AirBoardApp:
         # Keep this composed frame natural for the clean OBS output window.
         clean_frame = frame.copy()
         result = self.tracker.process(clean_frame, detect_fist=self.fist_clear_var.get())
-        if result.point is None:
-            self.canvas.finish_stroke()
+        selected_mode = self._mode_zone_at(result.point, frame.shape) if result.point and result.drawing else None
+        if selected_mode:
+            if not self.mode_zone_pinch_active:
+                self.set_mode(selected_mode)
+            self.mode_zone_pinch_active = True
+            self._finish_active_stroke()
+            self.status_var.set(f"Mode selected: {selected_mode}")
+        elif result.point is None:
+            self._finish_active_stroke()
+            self.mode_zone_pinch_active = False
             self.fist_was_active = False
             self.status_var.set("No hand detected")
         elif result.clear_gesture:
-            self.canvas.finish_stroke()
+            self._finish_active_stroke()
             if not self.fist_was_active:
                 self.canvas.clear()
             self.fist_was_active = True
             self.status_var.set("Canvas cleared (fist)")
-        elif result.drawing:
+        elif self.mode_var.get() == "DRAW" and result.drawing:
+            self.mode_zone_pinch_active = False
             self.fist_was_active = False
             if self.canvas.active_stroke is None:
                 self.canvas.start_stroke(result.point, self.pen_bgr, self.width_var.get())
             else:
                 self.canvas.add_point(result.point)
-            self.status_var.set("Drawing")
+            self.status_var.set("DRAW")
+        elif self.mode_var.get() == "MEDIA" and result.drawing:
+            self.mode_zone_pinch_active = False
+            self._finish_active_stroke()
+            self._move_active_media(result.point, frame.shape)
+            self.status_var.set("MEDIA")
         else:
             self.fist_was_active = False
-            self.canvas.finish_stroke()
-            self.status_var.set("Tracking")
+            if not result.drawing:
+                self.mode_zone_pinch_active = False
+            self._finish_active_stroke()
+            self.status_var.set(self.mode_var.get())
         frame = self.images.overlay(frame, self.x_var.get(), self.y_var.get(), self.scale_var.get())
         frame = self.media.overlay(frame, self.media_x_var.get(), self.media_y_var.get(), self.media_scale_var.get())
         self.canvas.render(frame)
         if self.landmarks_var.get() and result.landmarks:
             self.tracker.draw_landmarks(frame, result.landmarks)
+        if result.point and self.mode_var.get() == "POINTER":
+            self._add_pointer_trail(result.point)
+            self._render_pointer_trail(frame)
         if result.point:
-            cv2.circle(frame, result.point, 9, (0, 0, 255) if result.drawing else (0, 220, 0), -1, cv2.LINE_AA)
+            cursor_color = (255, 220, 0) if self.mode_var.get() == "POINTER" else ((0, 0, 255) if result.drawing else (0, 220, 0))
+            cv2.circle(frame, result.point, 9, cursor_color, -1, cv2.LINE_AA)
             cv2.circle(frame, result.point, 11, (255, 255, 255), 1, cv2.LINE_AA)
+        self._render_mode_zones(frame)
         if not self.presentation:
             cv2.putText(frame, self.status_var.get(), (16, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
         self._show_frame(frame)
+        self.last_output_frame = frame.copy()
         self.after_id = self.root.after(self.FRAME_DELAY_MS, self.update_frame)
 
     @staticmethod
@@ -385,9 +426,13 @@ class AirBoardApp:
         tk.Label(self.media_controls, text="Video audio is not sent to OBS", bg="#2b3039", fg="#b8c2d0", font=("Segoe UI", 8)).pack(pady=(0, 5))
         playback = tk.Frame(self.media_controls, bg="#2b3039")
         playback.pack(fill=tk.X, padx=14, pady=4)
-        ttk.Button(playback, text="Play", command=self.media.play).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-        ttk.Button(playback, text="Pause", command=self.media.pause).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        ttk.Button(playback, text="Freeze Frame", command=self.freeze_video).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        ttk.Button(playback, text="Resume", command=self.resume_video, style="Accent.TButton").pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
         ttk.Button(playback, text="Restart", command=self.media.restart).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+        annotation_options = tk.Frame(self.media_controls, bg="#2b3039")
+        annotation_options.pack(fill=tk.X, padx=14, pady=3)
+        tk.Radiobutton(annotation_options, text="Keep annotations on resume", value="keep", variable=self.resume_annotation_var, bg="#2b3039", fg="#e8edf4", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="white").pack(anchor=tk.W)
+        tk.Radiobutton(annotation_options, text="Clear annotations on resume", value="clear", variable=self.resume_annotation_var, bg="#2b3039", fg="#e8edf4", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="white").pack(anchor=tk.W)
         options = tk.Frame(self.media_controls, bg="#2b3039")
         options.pack(fill=tk.X, padx=14, pady=2)
         tk.Checkbutton(options, text="Loop", variable=self.loop_var, command=self._set_loop, bg="#2b3039", fg="#e8edf4", selectcolor="#3b4350", activebackground="#2b3039", activeforeground="white").pack(side=tk.LEFT)
@@ -397,6 +442,7 @@ class AirBoardApp:
         self._media_slider("Horizontal position", self.media_x_var, 0, 100)
         self._media_slider("Vertical position", self.media_y_var, 0, 100)
         self._media_slider("Scale (%)", self.media_scale_var, 10, 150)
+        ttk.Button(self.media_controls, text="Save Annotated Frame", command=self.save_annotated_frame).pack(fill=tk.X, padx=14, pady=(6, 2))
         ttk.Button(self.media_controls, text="Remove Video", command=self.remove_media).pack(fill=tk.X, padx=14, pady=(6, 12))
         self.media_controls.protocol("WM_DELETE_WINDOW", self._hide_media_controls)
 
@@ -420,6 +466,25 @@ class AirBoardApp:
         if self.media_controls and self.media_controls.winfo_exists():
             self.freeze_button.configure(text="Unfreeze" if self.media.frozen else "Freeze Frame")
 
+    def freeze_video(self) -> None:
+        if self.media.loaded:
+            self.media.frozen = True
+            self.status_var.set("Frame frozen — explain and annotate")
+
+    def resume_video(self) -> None:
+        if self.resume_annotation_var.get() == "clear":
+            self.clear()
+        self.media.play()
+        self.status_var.set("Video resumed")
+
+    def save_annotated_frame(self) -> None:
+        if self.last_output_frame is None:
+            messagebox.showinfo("No frame yet", "Start the camera or video before saving a frame.", parent=self.root)
+            return
+        path = filedialog.asksaveasfilename(parent=self.root, title="Save annotated frame", defaultextension=".png", filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg")])
+        if path and not cv2.imwrite(path, self.last_output_frame):
+            messagebox.showerror("Save failed", "Could not save the annotated frame.", parent=self.root)
+
     def undo(self) -> None:
         self.canvas.undo()
 
@@ -432,6 +497,63 @@ class AirBoardApp:
     def _on_fist_clear_toggle(self) -> None:
         # Requiring a new fist after enabling prevents an immediate clear.
         self.fist_was_active = False
+
+    def set_mode(self, mode: str) -> None:
+        self._finish_active_stroke()
+        self.mode_var.set(mode)
+        self._refresh_mode_buttons()
+
+    def _refresh_mode_buttons(self) -> None:
+        for name, button in self.mode_buttons.items():
+            button.configure(style="Accent.TButton" if name == self.mode_var.get() else "TButton")
+
+    def _finish_active_stroke(self) -> None:
+        self.canvas.finish_stroke(self.smart_shapes_var.get())
+
+    def _add_pointer_trail(self, point: tuple[int, int]) -> None:
+        now = time.monotonic()
+        self.pointer_trail.append((now, point))
+        self.pointer_trail = [(timestamp, position) for timestamp, position in self.pointer_trail if now - timestamp <= 1.0]
+
+    def _render_pointer_trail(self, frame) -> None:
+        now = time.monotonic()
+        overlay = frame.copy()
+        for timestamp, point in self.pointer_trail:
+            age = now - timestamp
+            radius = max(2, int(9 * (1 - age)))
+            cv2.circle(overlay, point, radius, (255, 220, 0), -1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+    def _move_active_media(self, point: tuple[int, int], frame_shape) -> None:
+        height, width = frame_shape[:2]
+        target_x, target_y = int(point[0] * 100 / width), int(point[1] * 100 / height)
+        if self.media.loaded:
+            self.media_x_var.set(target_x); self.media_y_var.set(target_y)
+        elif self.images.loaded:
+            self.x_var.set(target_x); self.y_var.set(target_y)
+
+    @staticmethod
+    def _mode_zone_at(point: tuple[int, int], frame_shape) -> str | None:
+        height, width = frame_shape[:2]
+        box_width, box_height, gap, margin = 112, 34, 7, 18
+        left = width - box_width - margin
+        for index, mode in enumerate(("DRAW", "POINTER", "MEDIA")):
+            top = margin + index * (box_height + gap)
+            if left <= point[0] <= left + box_width and top <= point[1] <= top + box_height:
+                return mode
+        return None
+
+    def _render_mode_zones(self, frame) -> None:
+        height, width = frame.shape[:2]
+        box_width, box_height, gap, margin = 112, 34, 7, 18
+        left = width - box_width - margin
+        for index, mode in enumerate(("DRAW", "POINTER", "MEDIA")):
+            top = margin + index * (box_height + gap)
+            active = mode == self.mode_var.get()
+            color = (245, 99, 79) if active else (56, 65, 82)
+            cv2.rectangle(frame, (left, top), (left + box_width, top + box_height), color, -1, cv2.LINE_AA)
+            cv2.rectangle(frame, (left, top), (left + box_width, top + box_height), (226, 232, 240), 1, cv2.LINE_AA)
+            cv2.putText(frame, mode, (left + 12, top + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
 
     def toggle_presentation(self) -> None:
         self.presentation = not self.presentation

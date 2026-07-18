@@ -47,6 +47,20 @@ Click **Add Local Video** (or press `V`) to choose an MP4, AVI, MOV, MKV, or Web
 
 The overlay never includes audio in the OBS Window Capture video feed; the mute control records the desired state while keeping that behavior explicit. Video decoding depends on the codecs installed with OpenCV; MP4 with H.264 is the most reliable option.
 
+## Freeze, explain, resume
+
+Open **Video Controls**, choose **Freeze Frame**, and annotate the important frame in **DRAW** mode. Select whether to keep or clear annotations on **Resume**, then continue the lesson. Use **Save Annotated Frame** to export the composed frame as PNG or JPEG.
+
+## Modes and Smart Shapes
+
+- `DRAW` (`1`): pinch to create persistent strokes.
+- `POINTER` (`2`): a bright fingertip pointer with a one-second fading trail; no marks are left behind.
+- `MEDIA` (`3`): pinch to move the active video, or the active image when no video is loaded.
+
+Enable **Smart shapes** to clean eligible freehand strokes into straight lines, circles, or rectangles when the pinch is released.
+
+You can also pinch one of the three **DRAW / POINTER / MEDIA** boxes in the top-right of the video output to change modes without touching the controls.
+
 ## OBS setup
 
 Open OBS Studio, add a Window Capture source, select the Air_Board window, click Start Virtual Camera, and choose OBS Virtual Camera in your meeting app.
